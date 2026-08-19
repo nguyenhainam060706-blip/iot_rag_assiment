@@ -1,108 +1,131 @@
 from langchain_ollama import ChatOllama
-from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain_community.vectorstores import Chroma
+from langchain_chroma import Chroma
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain.chains import create_retrieval_chain
+from langchain.chains import create_retrieval_chain, create_history_aware_retriever
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.messages import HumanMessage, AIMessage
 
+from app.config import settings
+
 # ==========================================
-# 1. KHỞI TẠO MODELS
+# 1. KHỞI TẠO MODELS & VECTOR DB
 # ==========================================
-print("Loading BGE-M3 Embeddings...")
-embeddings = HuggingFaceEmbeddings(model_name="BAAI/bge-m3")
+print(f"Loading {settings.EMBEDDING_MODEL} Embeddings...")
+embeddings = HuggingFaceEmbeddings(model_name=settings.EMBEDDING_MODEL)
 
 print("Connecting to ChromaDB...")
-vector_db = Chroma(persist_directory="./chroma_db", embedding_function=embeddings)
-retriever = vector_db.as_retriever(search_kwargs={"k": 5})
+vector_db = Chroma(
+    persist_directory=settings.CHROMA_PERSIST_DIR, 
+    embedding_function=embeddings,
+    collection_name=settings.CHROMA_COLLECTION
+)
+# Lấy 5 tài liệu liên quan nhất
+retriever = vector_db.as_retriever(search_kwargs={"k": 5}) 
 
-print("Connecting to Local LLM (Qwen)...")
-llm = ChatOllama(model="qwen:4b", temperature=0)
+print(f"Connecting to Local LLM ({settings.LLM_MODEL})...")
+llm = ChatOllama(
+    base_url=settings.OLLAMA_BASE_URL,
+    model=settings.LLM_MODEL, 
+    temperature=settings.LLM_TEMPERATURE
+)
 
 # ==========================================
-# 2. BỘ NHỚ RAM TẠM THỜI (MEMORY MANAGER)
+# 2. BỘ NHỚ RAM TẠM THỜI (Tối ưu VRAM)
 # ==========================================
-# Đây là cuốn sổ tay lưu lịch sử chat của toàn bộ sinh viên
 session_histories = {}
 
 def get_chat_history(session_id: str):
-    """Lấy lịch sử chat của một sinh viên cụ thể"""
     if session_id not in session_histories:
         session_histories[session_id] = []
     return session_histories[session_id]
 
 def update_chat_history(session_id: str, question: str, answer: str):
-    """Lưu lại câu hỏi và câu trả lời vào sổ tay"""
     history = get_chat_history(session_id)
     history.append(HumanMessage(content=question))
     history.append(AIMessage(content=answer))
     
-    # Mẹo tối ưu VRAM: Chỉ nhớ 3 cặp câu hỏi-trả lời gần nhất (6 messages)
+    # Cắt bộ nhớ giữ lại tối đa 3 lượt hội thoại (6 messages) để chống tràn VRAM
     if len(history) > 6:
         session_histories[session_id] = history[-6:]
 
 # ==========================================
-# 3. XÂY DỰNG PROMPT (CÓ CHỖ CHO LỊCH SỬ)
+# 3. XÂY DỰNG HISTORY-AWARE RAG CHAIN
 # ==========================================
-system_prompt = """Bạn là 'AI Teaching Assistant for IoT Practical Laboratory'.
+
+# 3.1. Prompt báo cho LLM viết lại câu hỏi tìm kiếm
+contextualize_q_system_prompt = (
+    "Dựa trên lịch sử trò chuyện và câu hỏi mới nhất, hãy viết lại câu hỏi "
+    "thành một câu độc lập, đầy đủ từ khóa để tìm kiếm trong tài liệu.\n"
+    "KHÔNG trả lời câu hỏi, chỉ trả về câu hỏi đã được viết lại."
+)
+contextualize_q_prompt = ChatPromptTemplate.from_messages([
+    ("system", contextualize_q_system_prompt),
+    MessagesPlaceholder("chat_history"),
+    ("human", "{input}"),
+])
+
+# Bộ tìm kiếm thông minh: Tự đọc history -> Viết lại câu hỏi -> Tìm ChromaDB
+history_aware_retriever = create_history_aware_retriever(llm, retriever, contextualize_q_prompt)
+
+# 3.2. Prompt chính để trả lời (Có hỗ trợ phân tích code/log theo Section 23, 24)
+qa_system_prompt = """Bạn là 'AI Teaching Assistant for IoT Practical Laboratory'.
 Nhiệm vụ của bạn là hỗ trợ sinh viên thực hành IoT dựa trên tài liệu Lab.
 
 QUY TẮC NGHIÊM NGẶT:
 1. KHÔNG tự tạo thông số kỹ thuật, pinout, voltage, hoặc bịa datasheet.
-2. NẾU TÀI LIỆU KHÔNG CÓ, HÃY NÓI: 'Không đủ thông tin trong Knowledge Base'.
+2. NẾU TÀI LIỆU KHÔNG CÓ, HÃY NÓI CHÍNH XÁC: 'Không đủ thông tin trong Knowledge Base'.
 3. Hướng dẫn từng bước, giải thích nguyên nhân trước khi đưa giải pháp.
 4. Trả lời bằng Tiếng Việt thân thiện.
 
 TÀI LIỆU KNOWLEDGE BASE:
 {context}
-
-THÔNG TIN TỪ MÁY SINH VIÊN (Nếu có):
-Code: {code}
-Log lỗi: {log}
 """
 
-prompt_template = ChatPromptTemplate.from_messages([
-    ("system", system_prompt),
-    # Dòng này cực kỳ quan trọng: Chèn lịch sử chat vào trước câu hỏi mới
-    MessagesPlaceholder(variable_name="chat_history"),
-    ("human", "{input}"),
+qa_prompt = ChatPromptTemplate.from_messages([
+    ("system", qa_system_prompt),
+    MessagesPlaceholder("chat_history"),
+    # Gộp chung câu hỏi, code và log vào input của Human
+    ("human", "Câu hỏi: {input}\n\nCode đang chạy:\n{code}\n\nLog lỗi hệ thống:\n{log}"),
 ])
 
-rag_chain = create_retrieval_chain(
-    retriever, 
-    create_stuff_documents_chain(llm, prompt_template)
-)
+# Chuỗi trả lời kết hợp tài liệu
+qa_chain = create_stuff_documents_chain(llm, qa_prompt)
+
+# Ghép toàn bộ luồng lại
+rag_chain = create_retrieval_chain(history_aware_retriever, qa_chain)
 
 # ==========================================
 # 4. HÀM CHÍNH API GỌI VÀO
 # ==========================================
 def ask_iot_assistant(session_id: str, question: str, code: str = None, log: str = None):
-    code_text = code if code else "Không có code được gửi kèm."
-    log_text = log if log else "Không có log lỗi."
+    # Xử lý input rỗng
+    code_text = code if code else "Không có."
+    log_text = log if log else "Không có."
     
-    # 4.1. Lấy lịch sử chat cũ của sinh viên này
     current_history = get_chat_history(session_id)
     
-    # 4.2. Chạy chuỗi RAG (Nhồi thêm chat_history vào)
+    # Kích hoạt Chain
     response = rag_chain.invoke({
         "input": question,
-        "chat_history": current_history, # AI sẽ đọc được các câu trước đó
+        "chat_history": current_history, 
         "code": code_text,
         "log": log_text
     })
     
-    # 4.3. Lưu ngay kết quả vừa trả lời vào bộ nhớ để lần sau dùng tiếp
     final_answer = response["answer"]
+    
+    # Cập nhật lịch sử (đã tự động có giới hạn 6 tin nhắn)
     update_chat_history(session_id, question, final_answer)
     
-    # 4.4. Trích xuất nguồn tài liệu
+    # Trích xuất nguồn (Source Citation)
     sources = []
     for doc in response["context"]:
         metadata = doc.metadata
         sources.append({
             "document": metadata.get("source", "Unknown Document"),
             "page": metadata.get("page", 0),
-            "score": 0.0 
+            "score": metadata.get("score", 0.0) # Có thể Chroma chưa cấp score, cứ để mặc định 0.0
         })
         
     return {
