@@ -2,9 +2,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from typing import Optional, List
 from app.rag.pipeline import run_rag_pipeline 
-
 router = APIRouter()
-
 # 1. Định nghĩa Input (Request Schema)
 class ChatRequest(BaseModel):
     session_id: str
