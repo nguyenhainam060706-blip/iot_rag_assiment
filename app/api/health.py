@@ -3,7 +3,7 @@ from app.config import settings
 
 router = APIRouter()
 
-@router.get("/", response_model=dict)
+@router.get("/health", response_model=dict)
 async def health_check():
     """
     API Health Check (Theo Section 26.1)

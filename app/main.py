@@ -1,33 +1,33 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.api.chat import router as chat_router
-from app.api import chat, documents # import thêm documents
+# Import các router từ thư mục api
+from app.api import chat, documents, health
+
 app = FastAPI(
     title="IoT Practical Assistant API",
     description="RAG Chatbot hỗ trợ sinh viên thực hành IoT",
     version="1.0.0"
 )
-# Đăng ký router chat
-app.include_router(chat.router, prefix="/api", tags=["Chat"])
 
-# Đăng ký router quản lý tài liệu
-app.include_router(documents.router, prefix="/api/documents", tags=["Documents"])
-# Cho phép Web Lab gọi API (CORS)
+# 1. CẤU HÌNH CORS (Đã fix lỗi bảo mật)
+ALLOWED_ORIGINS = [
+    "http://localhost:3000",   
+    "http://127.0.0.1:5173",   
+    "http://localhost:8080",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # Khi deploy thật, đổi thành IP của web
-    allow_credentials=True,
+    allow_origins=ALLOWED_ORIGINS, 
+    allow_credentials=True, 
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Gắn các đường dẫn API vào
-app.include_router(chat_router, prefix="/api")
+# 2. ĐĂNG KÝ ROUTER
+# Gọi router health (từ health.py)
+app.include_router(health.router, prefix="/api", tags=["System"])
 
-@app.get("/api/health")
-async def health_check():
-    return {
-        "status": "ok",
-        "llm": "qwen:4b", # Theo đúng spec
-        "vector_db": "connected"
-    }
+# Gọi router chat và documents
+app.include_router(chat.router, prefix="/api/chat", tags=["Chat"])
+app.include_router(documents.router, prefix="/api/documents", tags=["Documents"])
