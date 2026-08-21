@@ -2,12 +2,11 @@ from langchain_ollama import ChatOllama
 from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain.chains import create_retrieval_chain, create_history_aware_retriever
-from langchain.chains.combine_documents import create_stuff_documents_chain
+# Old (Broken)
+from langchain_classic.chains import create_retrieval_chain, create_history_aware_retriever
+
 from langchain_core.messages import HumanMessage, AIMessage
-
 from app.config import settings
-
 # ==========================================
 # 1. KHỞI TẠO MODELS & VECTOR DB
 # ==========================================
@@ -76,7 +75,8 @@ QUY TẮC NGHIÊM NGẶT:
 1. KHÔNG tự tạo thông số kỹ thuật, pinout, voltage, hoặc bịa datasheet.
 2. NẾU TÀI LIỆU KHÔNG CÓ, HÃY NÓI CHÍNH XÁC: 'Không đủ thông tin trong Knowledge Base'.
 3. Hướng dẫn từng bước, giải thích nguyên nhân trước khi đưa giải pháp.
-4. Trả lời bằng Tiếng Việt thân thiện.
+4. Trả lời bằng Tiếng Việt thân thiện và có thể tìm hiểu thêm từ tài liệu Tiếng Anh rồi đưa về Tiếng Việt thân thiện.
+
 
 TÀI LIỆU KNOWLEDGE BASE:
 {context}
