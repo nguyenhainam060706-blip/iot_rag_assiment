@@ -41,9 +41,9 @@ def get_safe_path(filename: str) -> Path:
     return UPLOAD_DIR / safe_name
 
 
-# ---------------------------------------------------------
+
 # 1. GET /api/documents - Liệt kê các tài liệu trong hệ thống
-# ---------------------------------------------------------
+
 @router.get("", response_model=List[DocumentInfo])
 async def list_documents():
     """Trả về danh sách các tài liệu hiện có trong Knowledge Base."""
@@ -64,9 +64,8 @@ async def list_documents():
     return documents
 
 
-# ---------------------------------------------------------
 # 2. POST /api/documents - Upload tài liệu mới
-# ---------------------------------------------------------
+
 @router.post("")
 async def upload_document(
     file: UploadFile = File(...),
