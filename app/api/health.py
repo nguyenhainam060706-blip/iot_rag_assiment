@@ -1,24 +1,60 @@
+import asyncio
+import httpx
 from fastapi import APIRouter
+from pydantic import BaseModel
 from app.config import settings
-
+# Khởi tạo ChromaDB client ở module-level để tránh overhead I/O mỗi request
+try:
+    import chromadb
+    chroma_client = chromadb.PersistentClient(path=settings.CHROMA_PERSIST_DIR)
+except Exception:
+    chroma_client = None
 router = APIRouter()
-
-@router.get("/health", response_model=dict)
+class HealthResponse(BaseModel):
+    status: str          # "ok" | "degraded"
+    llm: str             # tên model, hoặc "<model> (unreachable)"
+    vector_db: str       # "connected" | "disconnected"
+@router.get("/health", response_model=HealthResponse)
 async def health_check():
     """
     API Health Check (Theo Section 26.1)
-    Trả về trạng thái của Backend, loại LLM đang sử dụng và kết nối Vector DB.
+    Kiểm tra thực tế trạng thái LLM và Vector DB mà không làm block event loop.
     """
-    # Mặc định trả về trạng thái chuẩn theo Tech Spec
-    response = {
-        "status": "ok",
-        "llm": settings.LLM_MODEL,         # Lấy linh hoạt từ config.py (ví dụ: qwen2.5:3b)
-        "vector_db": "connected"
-    }
     
-    # 💡 Tương lai (Phase 2):có thể tích hợp thư viện httpx vào đây 
-    # để ping thử (gửi request) tới settings.OLLAMA_BASE_URL.
-    # Nếu Ollama bị tắt, tự động đổi "status" thành "error". 
-    # Tạm thời ở MVP,  giữ form tĩnh này để đảm bảo API phản hồi cực nhanh (< 1s).
+    # --- 1. Kiểm tra ChromaDB ---
+    vector_db_status = "connected"
+    if chroma_client is None:
+        vector_db_status = "disconnected"
+    else:
+        try:
+            # Đưa thao tác đồng bộ (blocking I/O) vào threadpool 
+            # để bảo vệ event loop chính của FastAPI
+            await asyncio.to_thread(chroma_client.heartbeat)
+        except Exception:
+            vector_db_status = "disconnected"
+
+    # --- 2. Kiểm tra Ollama ---
+    # Giới hạn timeout 0.8s để đảm bảo API luôn phản hồi < 1s
+    health_check_timeout = min(getattr(settings, 'LLM_TIMEOUT_SECONDS', 2.0), 0.8)
+    llm_status = settings.LLM_MODEL
     
-    return response
+    try:
+        async with httpx.AsyncClient(timeout=health_check_timeout) as client:
+            resp = await client.get(f"{settings.OLLAMA_BASE_URL}/api/tags")
+            if resp.status_code != 200:
+                llm_status = f"{settings.LLM_MODEL} (unreachable)"
+    except Exception:
+        llm_status = f"{settings.LLM_MODEL} (unreachable)"
+
+    # --- 3. Tổng hợp trạng thái ---
+    overall_status = (
+        "ok"
+        if vector_db_status == "connected" and "unreachable" not in llm_status
+        else "degraded"
+    )
+
+    return HealthResponse(
+        status=overall_status,
+        llm=llm_status,
+        vector_db=vector_db_status,
+    )
