@@ -1,6 +1,5 @@
 import os
 from pydantic_settings import BaseSettings
-
 class Settings(BaseSettings):
     # --- 1. Cấu hình Ứng dụng (App Settings) ---
     APP_NAME: str = "IoT Practical Assistant API"
